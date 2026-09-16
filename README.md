@@ -1,69 +1,75 @@
 # Methodology & Algorithmic Pipeline
 
-An overview of the computer vision pipeline employed to isolate paper boundaries, rectify perspective distortion, and produce clean, legible digital documents.
+An overview of the computer vision pipeline employed to isolate paper boundaries, rectify perspective distortion, and produce clean, legible digital documents with real-time binarisation tuning.
 
 ---
 
 ### 1. Spatial Downsampling & Scale Preservation
-High-resolution camera captures contain fine grain and high-frequency textures that unnecessarily slow down image processing and create false edge detections. 
+High-resolution camera captures contain fine grain and high-frequency textures that degrade computational throughput and introduce spurious edge responses.
 
-* **Working Resolution:** The input image is scaled down to a standardised height for geometric analysis.
-* **Scale Ratio Tracking:** A scaling factor is retained to map the identified corner coordinates back to the original uncompressed image, ensuring the final scan retains full optical clarity without blur.
+* **Working Resolution:** The source image is scaled down to a standardised height of 500 px for geometric segmentation and contour analysis.
+* **Scale Ratio Tracking:** An exact scale factor $r = \frac{\text{original\_height}}{\text{working\_height}}$ is retained to project all derived spatial coordinates back onto the full-resolution uncompressed matrix, ensuring zero optical degradation during transformation.
 
 ---
 
 ### 2. Greyscale Conversion & Noise Suppression
-Before delineating document edges, internal distractions such as printed text, creases, and paper grain must be softened whilst preserving external boundaries.
+Internal print elements, creases, and surface textures must be attenuated whilst retaining distinct perimeter boundaries.
 
-* **Greyscale Conversion:** Colour channels are combined into a single-channel intensity image, isolating structural contrast from colour variance.
-* **Gaussian Filtering:** A subtle blur smooths out small sensor artefacts and high-contrast lettering so that subsequent edge detection responds primarily to the document's outer boundary.
+* **Greyscale Conversion:** Multi-channel RGB arrays are converted to single-channel luminance intensity.
+* **Gaussian Filtering:** A spatial low-pass filter ($5 \times 5$ Gaussian kernel, $\sigma = 0$) smooths sensor noise and internal typography, preventing internal details from interfering with boundary isolation.
 
 ---
 
 ### 3. Edge Detection
-The Canny edge detection algorithm isolates structural transitions across the scene through a three-stage mechanism:
+The Canny edge detection algorithm identifies salient structural transitions across the scene:
 
-* **Gradient Computation:** Detects sharp changes in pixel brightness horizontally and vertically.
-* **Thinning:** Suppresses pixels that are not the local peak along the gradient direction, leaving razor-thin outlines.
-* **Hysteresis Thresholding:** Retains strong edges whilst discarding faint noise. Intermediate edges are kept only if physically connected to a confirmed strong boundary.
+* **Gradient Computation:** Calculates directional derivatives across horizontal and vertical axes to locate local intensity extrema.
+* **Non-Maximum Suppression:** Thins wide gradient ridges to single-pixel-wide edge trajectories.
+* **Hysteresis Thresholding:** Dual thresholds (75 and 200) retain definitive edge paths while systematically discarding floating noise artifacts.
 
 ---
 
 ### 4. Contour Extraction & Salience Filtering
-The isolated edge segments are vectorised into continuous closed shapes:
+The binary edge map is topologically parsed into closed-loop vector representations:
 
-* **Topological Tracing:** Border-following routines extract geometric contours from the binary edge map.
-* **Area Prioritisation:** The extracted contours are ranked by enclosed surface area. The system focuses exclusively on the largest contours, under the reasonable assumption that the document is the dominant subject in frame.
+* **Topological Tracing:** Border-following routines retrieve external contours using simple chain approximation.
+* **Area Prioritisation:** Extracted contours are sorted in descending order by enclosed surface area, operating on the heuristic that the document constitutes the dominant geometric subject within the scene.
 
 ---
 
 ### 5. Polygonal Approximation
-Real-world paper edges are rarely geometrically pristine due to lens distortion, slight camera curvature, or imperfect paper alignment.
+Lens distortion and physical paper warping introduce minor curvature along edges that should ideally be linear.
 
-* **Shape Simplification:** The Ramer-Douglas-Peucker algorithm simplifies complex, jagged contours into clean polygonal approximations based on a perimeter-relative tolerance.
-* **Quadrilateral Constraint:** The pipeline iterates through candidate shapes until it identifies a polygon that reduces to exactly four vertices, representing the four corners of a sheet.
+* **Ramer-Douglas-Peucker Simplification:** Approximates complex, continuous contours into clean geometric polygons based on an arc-length tolerance ($\epsilon = 0.02 \times \text{Perimeter}$).
+* **Quadrilateral Constraint:** The pipeline iterates through candidate contours until it isolates a polygon reducing strictly to four vertices ($N = 4$).
 
 ---
 
 ### 6. Canonical Point Ordering
-To apply an unwarping transform, the four detected vertices must be deterministically mapped to specific positions: Top-Left, Top-Right, Bottom-Right, and Bottom-Left.
+Perspective rectification requires a deterministic mapping of the four vertices to fixed cartesian assignments: `[Top-Left, Top-Right, Bottom-Right, Bottom-Left]`.
 
-* **Sum Heuristic:** The vertex with the smallest sum of coordinates corresponds to the top-left, whilst the largest sum indicates the bottom-right.
-* **Difference Heuristic:** The vertex with the smallest difference between its coordinates identifies the top-right, whilst the largest difference indicates the bottom-left.
+* **Coordinate Sum ($x + y$):** The vertex with the minimal sum corresponds to the origin-adjacent **Top-Left**; the maximum sum denotes the **Bottom-Right**.
+* **Coordinate Difference ($x - y$):** The minimum difference identifies the **Top-Right**; the maximum difference designates the **Bottom-Left**.
 
 ---
 
 ### 7. Perspective Transformation (Homography)
-Once the corners are strictly indexed, perspective distortion caused by off-angle photography is corrected:
+Planar projective distortion introduced by non-orthogonal capture angles is corrected through homography:
 
-* **True Dimension Estimation:** The width and height of the destination rectangle are derived from the maximum Euclidean lengths of opposing edges, preventing anisotropic stretching.
-* **Homography Matrix:** A transformation matrix maps the skewed four-point boundary into a flat, top-down rectangular canvas.
-* **Bilinear Warping:** The transformation is applied directly to the full-resolution source image, interpolating pixels onto the planar canvas for an orthogonal, bird's-eye view.
+* **True Dimension Estimation:** Destination width and height are calculated via the maximum Euclidean norms between opposing vertices, preventing aspect ratio distortion.
+* **Transformation Matrix:** OpenCV computes the $3 \times 3$ perspective transformation matrix $M$ between source coordinates and planar target coordinates.
+* **High-Fidelity Warping:** The perspective transform is executed against the **original, full-resolution** image using bilinear interpolation, caching a high-detail greyscale scan in memory.
 
 ---
 
-### 8. Adaptive Thresholding
-Mobile scans frequently suffer from non-uniform ambient light, lens vignetting, and hand-cast shadows, rendering global thresholding techniques ineffective.
+### 8. Interactive Adaptive Binarisation & Calibration
+Non-uniform ambient lighting, specular reflections, and shadows render global binarisation (such as Otsu's thresholding) ineffective. To provide fine-grained control over varying paper textures and ink contrast, the system exposes an interactive real-time tuning interface.
 
-* **Local Neighbourhood Evaluation:** The threshold for every pixel is calculated dynamically based on the weighted mean of its immediate surrounding window.
-* **High-Contrast Binarisation:** Pixels darker than their immediate surroundings become clean text strokes, whilst the unevenly lit background is normalised to uniform white.
+* **Local Gaussian Neighbourhood:** Binarisation thresholds are computed per-pixel using a Gaussian-weighted local window to accommodate uneven lighting gradients.
+* **Decoupled Viewport Scaling:** While adjustments are calculated across the full-resolution buffer, viewports are scaled dynamically to fit display bounds without compromising export fidelity.
+* **Real-Time Sliders:**
+  * **Block Size:** Modulates the local evaluation window. The GUI maps continuous integer slider values to strict odd values $\ge 3$ via $B = 2 \times \text{slider\_value} + 3$, balancing local detail retention against low-frequency shadow rejection.
+  * **Constant Offset ($C$):** Governs foreground/background contrast sensitivity by tuning the local subtraction factor ($T(x,y) = \mu_{\text{local}} - C$).
+* **State Persistence:** Keyboard hooks capture user input directly from the event loop:
+  * Press `s` or `S` to write the full-resolution binarised scan to disk.
+  * Press `Esc` or `q` to abort execution without overwriting data.
